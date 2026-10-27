@@ -114,3 +114,10 @@ filtres GD, et les cartes de l'aperçu sont rendues par le serveur comme celles 
 - Pas encore de comptes utilisateurs : à déployer derrière une authentification (proxy, Authelia…).
 - Pistes : trajets routiers réels (OSRM), éviter le chevauchement des noms de villes sur la carte,
   pages de texte libre, thèmes et polices, export pour un imprimeur (profil CMJN, PDF/X).
+
+## Version d'essai sans serveur
+
+`demo/livre-photo-essai.html` est une version autonome qui tourne entièrement dans le navigateur.
+Elle a été écrite pour l'essayer depuis un téléphone. On y retrouve le même découpage en étapes et
+les mêmes dispositions de page. Le fond de carte (Natural Earth 1:50m) est intégré au fichier, et le PDF
+est produit dans le navigateur avec jsPDF. Les photos ne quittent pas l'appareil et ne sont pas enregistrées.
