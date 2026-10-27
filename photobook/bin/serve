@@ -1,0 +1,6 @@
+#!/bin/sh
+# Lancement sans Docker : serveur PHP intégré (développement).
+cd "$(dirname "$0")/.." || exit 1
+export PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-4}"
+exec php -d memory_limit=1024M -d upload_max_filesize=64M -d post_max_size=70M \
+  -S "${HOST:-127.0.0.1}:${PORT:-8080}" -t public public/index.php

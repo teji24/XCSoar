@@ -1,0 +1,17 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:80"
+    env_file: .env
+    volumes:
+      - ./data:/var/www/photobook/data
+    depends_on:
+      - gotenberg
+
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    # Les pages sont envoyées complètes (images incluses) : aucun accès réseau nécessaire.
+    command: ["gotenberg", "--api-timeout=600s"]
