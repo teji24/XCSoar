@@ -59,7 +59,7 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .field { display: grid; gap: 4px; font-size: .9rem; }
 .check { display: flex; gap: 8px; align-items: center; font-size: .92rem; }
 .pick { display: grid; place-items: center; text-align: center; gap: 4px; padding: 22px 12px; border: 2px dashed var(--line); border-radius: 12px; background: var(--panel); cursor: pointer; }
-.pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.pick input { max-width: 100%; font-size: .9rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
 .ph { position: relative; margin: 0; border-radius: 8px; overflow: hidden; background: var(--line); }
 .ph img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
@@ -75,8 +75,9 @@ canvas.map { width: 100%; height: auto; display: block; border-radius: 8px; back
 .steps input { width: 100%; font-weight: 600; }
 .thumbs { display: flex; gap: 3px; margin-top: 4px; overflow: hidden; }
 .thumbs img { width: 38px; height: 38px; object-fit: cover; border-radius: 3px; flex: none; }
-.strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; }
-.pthumb { flex: none; display: grid; gap: 3px; justify-items: center; padding: 4px; border: 2px solid transparent; border-radius: 8px; background: transparent; min-height: 0; }
+.strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 6px; max-height: 42vh; overflow-y: auto; }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.pthumb { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px; border: 2px solid transparent; border-radius: 8px; background: transparent; height: auto; }
 .pthumb.on { border-color: var(--accent); }
 .pthumb .sheet { pointer-events: none; }
 .stage { display: flex; justify-content: center; }
@@ -143,7 +144,9 @@ const LAYOUTS = {
 const FORMATS = { A3: [297, 420, 'A3'], A4: [210, 297, 'A4'], A5: [148, 210, 'A5'], SQ20: [200, 200, 'Carré 20 cm'], SQ30: [300, 300, 'Carré 30 cm'] };
 const COLORS = ['#d64834', '#2f7ed8', '#2a9d5c', '#e8a33d', '#8e5bd1', '#18a5a5', '#c2477e', '#6b8e23', '#b5651d', '#4a5ab5'];
 const PT_MM = 25.4 / 72;
-const MAX_SIDE = 2400;
+const MAX_SIDE = 2400; // impression
+const MID_SIDE = 1100;  // aperçu de page
+const THUMB_SIDE = 320; // vignettes
 
 const S = {
   tab: 'photos',
@@ -322,6 +325,7 @@ const my = (lat) => { const r = Math.max(-85, Math.min(85, lat)) * Math.PI / 180
 function drawMap(canvas, w, h, { markers = [], path = [], dots = [], maxSpanKm = 3 } = {}, u = 1) {
   canvas.width = Math.round(w); canvas.height = Math.round(h);
   const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas indisponible');
   const pts = [...markers.map((m) => [m.lat, m.lon]), ...path, ...dots];
   if (!pts.length) pts.push([46.5, 2.5]);
   let x0 = Math.min(...pts.map((p) => mx(p[1]))), x1 = Math.max(...pts.map((p) => mx(p[1])));
@@ -392,6 +396,25 @@ function drawMap(canvas, w, h, { markers = [], path = [], dots = [], maxSpanKm =
   ctx.fillText('Natural Earth', w - 4 * u, h - 3 * u);
 }
 
+const mapCache = new Map();
+let mapCanvas = null;
+/** Rend une carte en image (cache) ; un seul canvas réutilisé pour ménager la mémoire. */
+function mapImage(pd, w, hgt, u) {
+  const data = pd.type === 'overview' ? tripMapData() : chapterMapData(pd.clusterId);
+  const key = JSON.stringify([data, Math.round(w), Math.round(hgt)]);
+  if (mapCache.has(key)) return mapCache.get(key);
+  try {
+    mapCanvas ||= document.createElement('canvas');
+    drawMap(mapCanvas, w, hgt, data, u);
+    const url = mapCanvas.toDataURL('image/jpeg', .88);
+    mapCanvas.width = mapCanvas.height = 1;
+    if (mapCache.size > 60) mapCache.clear();
+    mapCache.set(key, url);
+    return url;
+  } catch {
+    return null;
+  }
+}
 function tripMapData() {
   const located = S.clusters.map((c, i) => ({ c, i })).filter(({ c }) => c.lat !== null);
   return { markers: located.map(({ c, i }) => ({ lat: c.lat, lon: c.lon, number: i + 1, label: c.title.replace(/^Étape \d+ · /, '') })), path: located.map(({ c }) => [c.lat, c.lon]), maxSpanKm: 40 };
@@ -529,16 +552,12 @@ async function importFiles(files) {
       try { meta = (await exifr.parse(file, { gps: true, exif: true, tiff: true, reviveValues: true })) || {}; } catch { /* pas d'EXIF */ }
       const url = URL.createObjectURL(file);
       const img = await loadImage(url); // le navigateur applique l'orientation EXIF
-      URL.revokeObjectURL(url);
-      const sc = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.naturalWidth * sc); c.height = Math.round(img.naturalHeight * sc);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', .9));
       const date = meta.DateTimeOriginal instanceof Date ? meta.DateTimeOriginal : new Date(file.lastModified || Date.now());
       const lat = typeof meta.latitude === 'number' && !(meta.latitude === 0 && meta.longitude === 0) ? meta.latitude : null;
       if (lat === null) noGps++;
-      addPhoto({ name: file.name, blob, w: c.width, h: c.height, date, lat, lon: lat === null ? null : meta.longitude, dateGuessed: !(meta.DateTimeOriginal instanceof Date) });
+      await addPhoto(img, img.naturalWidth, img.naturalHeight, { name: file.name, date, lat, lon: lat === null ? null : meta.longitude, dateGuessed: !(meta.DateTimeOriginal instanceof Date) });
+      img.src = '';
+      URL.revokeObjectURL(url);
     } catch { bad++; }
     done++;
   }
@@ -548,14 +567,33 @@ async function importFiles(files) {
   if (noGps && noGps === files.length) toast('Aucune position GPS trouvée : votre téléphone l’a peut-être retirée à l’envoi. Voir l’aide sous le bouton.');
   render();
 }
-function addPhoto(p) {
-  const url = URL.createObjectURL(p.blob);
-  S.photos.push({ id: newId(), url, ts: p.date.getTime() / 1000, zoom: 1, cx: .5, cy: .5, brightness: 0, contrast: 0, city: null, ...p });
+/** Réduit une image (ou un canvas) à `side` px de côté max et renvoie un JPEG. */
+async function shrink(src, w, hgt, side, q = .88) {
+  const sc = Math.min(1, side / Math.max(w, hgt));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * sc)); c.height = Math.max(1, Math.round(hgt * sc));
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', q));
+  const out = { blob, w: c.width, h: c.height };
+  c.width = c.height = 1; // libère la mémoire du canvas (important sur iPhone)
+  return out;
+}
+/** Ajoute une photo à partir d'une source décodée : on ne garde que des JPEG compressés. */
+async function addPhoto(src, w, hgt, p) {
+  const full = await shrink(src, w, hgt, MAX_SIDE, .9);
+  const mid = await shrink(src, w, hgt, MID_SIDE, .85);
+  const thumb = await shrink(src, w, hgt, THUMB_SIDE, .8);
+  S.photos.push({
+    id: newId(), ts: p.date.getTime() / 1000, zoom: 1, cx: .5, cy: .5, brightness: 0, contrast: 0, city: null, ...p,
+    w: full.w, h: full.h,
+    url: URL.createObjectURL(full.blob), midUrl: URL.createObjectURL(mid.blob), thumbUrl: URL.createObjectURL(thumb.blob),
+  });
   S.photos.sort((a, b) => a.ts - b.ts);
 }
 
 /** Voyage d'exemple : 35 images dessinées, avec dates et positions réelles de 5 villes. */
-async function loadSample() {
+async function loadSample(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Préparation de l’exemple…'; }
   const cities = [['Lisbonne', 38.7139, -9.1394, [40, 110, 180]], ['Sintra', 38.7979, -9.3882, [60, 150, 80]], ['Porto', 41.1496, -8.6109, [190, 90, 40]], ['Coimbra', 40.2033, -8.4103, [150, 60, 150]], ['Faro', 37.0194, -7.9322, [200, 150, 30]]];
   let seed = 11;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -563,7 +601,7 @@ async function loadSample() {
     for (let i = 0; i < 7; i++) {
       const portrait = i % 3 === 1;
       const c = document.createElement('canvas');
-      c.width = portrait ? 1600 : 2400; c.height = portrait ? 2400 : 1600;
+      c.width = portrait ? 1200 : 1800; c.height = portrait ? 1800 : 1200;
       const ctx = c.getContext('2d');
       const grd = ctx.createLinearGradient(0, 0, c.width, c.height);
       grd.addColorStop(0, `rgb(${col.map((v) => Math.min(255, v + 70)).join()})`);
@@ -573,16 +611,16 @@ async function loadSample() {
         ctx.beginPath(); ctx.arc(rnd() * c.width, rnd() * c.height, 60 + rnd() * 260, 0, 7);
         ctx.fillStyle = `rgba(255,255,255,${.08 + rnd() * .22})`; ctx.fill();
       }
-      ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.font = 'bold 130px Georgia, serif';
-      ctx.fillText(name, 90, 210);
-      ctx.font = '60px Arial, sans-serif'; ctx.fillText(`photo ${i + 1}`, 96, 300);
-      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', .85));
+      ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.font = 'bold 100px Georgia, serif';
+      ctx.fillText(name, 70, 160);
+      ctx.font = '46px Arial, sans-serif'; ctx.fillText(`photo ${i + 1}`, 74, 230);
       const day = 1 + ci * 2 + Math.floor(i / 4), hour = 9 + (i % 4) * 2;
       const noGps = ci === 2 && i === 3;
-      addPhoto({
-        name: `${name} ${i + 1}.jpg`, blob, w: c.width, h: c.height, date: new Date(2026, 4, day, hour, 15), city: name,
+      await addPhoto(c, c.width, c.height, {
+        name: `${name} ${i + 1}.jpg`, date: new Date(2026, 4, day, hour, 15), city: name,
         lat: noGps ? null : lat + (rnd() - .5) * .02, lon: noGps ? null : lon + (rnd() - .5) * .02,
       });
+      c.width = c.height = 1;
     }
   }
   S.name = 'Portugal 2026';
@@ -612,8 +650,9 @@ function renderPhotos() {
   view.replaceChildren(
     h('section.card', {},
       h('h2', {}, 'Ajouter des photos'),
-      h('label.pick', {}, input, h('strong', {}, 'Choisir des photos'), h('span.muted.small', {}, 'Elles restent sur votre téléphone : rien n’est envoyé.')),
-      h('button', { type: 'button', onclick: loadSample }, 'Essayer avec un voyage d’exemple (Portugal, 35 photos)'),
+      h('label.pick', { for: 'files' }, h('strong', {}, 'Choisir des photos'), input, h('span.muted.small', {}, 'Elles restent sur votre téléphone : rien n’est envoyé.')),
+      h('p.small.muted', {}, 'Rien ne s’ouvre ? L’app Claude ne permet pas toujours de choisir des fichiers : ouvrez ce lien dans Chrome ou Safari, connecté à claude.ai.'),
+      h('button', { type: 'button', onclick: (e) => loadSample(e.currentTarget) }, 'Essayer avec un voyage d’exemple (Portugal, 35 photos)'),
       h('div', { id: 'progress' }),
       h('details', {}, h('summary', { class: 'small' }, 'Mes photos n’ont pas de position ?'),
         h('p.small.muted', { style: { marginTop: '6px' } }, 'Certains téléphones retirent la position GPS quand on choisit une photo dans la galerie. Sur Android, passez par « Parcourir » ou « Fichiers » plutôt que par la galerie. Sur iPhone, touchez « Options » dans le sélecteur et activez « Position ». Les photos sans position sont placées entre leurs voisines.'))),
@@ -621,7 +660,7 @@ function renderPhotos() {
       h('div.row', {}, h('h2', { style: { flex: 1 } }, `${S.photos.length} photo${S.photos.length > 1 ? 's' : ''}`), h('span.muted.small', {}, `${located} avec position`)),
       h('button.primary', { type: 'button', onclick: () => setTab('trip') }, 'Retracer le voyage →'),
       h('div.grid', {}, S.photos.map((p) => h('figure.ph', {},
-        h('img', { src: p.url, alt: p.name, loading: 'lazy' }),
+        h('img', { src: p.thumbUrl, alt: p.name, loading: 'lazy' }),
         h('figcaption', {}, h('span', {}, shortFmt.format(p.date)), h('span', {}, p.lat !== null ? '● GPS' : 'sans GPS')),
         h('button.x', { type: 'button', 'aria-label': `Retirer ${p.name}`, onclick: () => { S.photos = S.photos.filter((x) => x !== p); S.pages.forEach((pg) => { if (pg.slots) pg.slots = pg.slots.map((s) => (s === p.id ? null : s)); }); trip = null; render(); } }, '×'))))) : null,
   );
@@ -644,7 +683,7 @@ function renderTrip() {
       return h('li', {}, h('span.num', { style: { background: COLORS[i % COLORS.length] } }, i + 1),
         h('div', {}, h('input', { type: 'text', value: c.title, 'aria-label': `Nom de l’étape ${i + 1}`, onchange: (e) => { S.trip.titles[c.id] = e.target.value; c.title = e.target.value; refresh(); } }),
           h('div.small.muted', {}, `${formatRange(a, b)} · ${c.photoIds.length} photo${c.photoIds.length > 1 ? 's' : ''}`),
-          h('div.thumbs', {}, c.photoIds.slice(0, 7).map((id) => h('img', { src: byId(id).url, alt: '' })))));
+          h('div.thumbs', {}, c.photoIds.slice(0, 7).map((id) => h('img', { src: byId(id).thumbUrl, alt: '' })))));
     }));
   };
   slider.addEventListener('input', () => { S.trip.steps = Number(slider.value); applySteps(); refresh(); });
@@ -688,7 +727,7 @@ function sheet(pgData, s, interactive) {
       if (p) {
         const reg = region(p, r.w / r.h);
         const sc = (r.w * s) / reg.w;
-        d.append(h('img', { src: p.url, alt: '', draggable: false, style: { width: `${p.w * sc}px`, height: `${p.h * sc}px`, left: `${-reg.x * sc}px`, top: `${-reg.y * sc}px`, filter: filterCss(p) } }));
+        d.append(h('img', { src: interactive ? p.midUrl : p.thumbUrl, alt: '', draggable: false, style: { width: `${p.w * sc}px`, height: `${p.h * sc}px`, left: `${-reg.x * sc}px`, top: `${-reg.y * sc}px`, filter: filterCss(p) } }));
         if (interactive && dpiOf(p, r) < 150) d.append(h('span.lowres', {}, `${Math.round(dpiOf(p, r))} dpi`));
       } else if (interactive) d.append(h('span.ph-empty', {}, 'Touchez puis choisissez une photo'));
       if (interactive) attachSlot(d, pgData, k, r, s);
@@ -702,12 +741,11 @@ function sheet(pgData, s, interactive) {
   }
   if (pgData.type === 'overview' || pgData.type === 'chapter') {
     const rr = specialRects(pg, pgData.type);
-    const c = document.createElement('canvas');
-    el.append(h('div.el', { style: box(rr.map) }, c));
-    const dpr = Math.min(2, devicePixelRatio || 1);
+    const dpr = interactive ? Math.min(2, devicePixelRatio || 1) : 1;
     const pxW = rr.map.w * s * dpr, pxH = rr.map.h * s * dpr;
     // Même échelle de dessin que le PDF : 1 point de carte = 1/120 de pouce sur papier.
-    drawMap(c, pxW, pxH, pgData.type === 'overview' ? tripMapData() : chapterMapData(pgData.clusterId), (pxW / (rr.map.w / 25.4)) / 120);
+    const src = mapImage(pgData, pxW, pxH, (pxW / (rr.map.w / 25.4)) / 120);
+    el.append(h('div.el', { style: box(rr.map) }, src ? h('img', { src, alt: 'Carte', style: { width: '100%', height: '100%', display: 'block' } }) : null));
     const size = (pgData.type === 'overview' ? 20 : 24) * scaleTxt;
     el.append(h('div.el', { style: box(rr.text) }, h('div.title', { style: { fontSize: fsz(size) } }, pgData.title || ''), pgData.subtitle ? h('div.sub', { style: { fontSize: fsz(size * .45) } }, pgData.subtitle) : null));
   }
@@ -757,9 +795,10 @@ let stripEl = null;
 function renderStrip() {
   if (!stripEl) return;
   const pg = page();
-  const s = 84 / Math.max(pg.width + 2 * pg.bleed, pg.height + 2 * pg.bleed);
+  const s = 72 / Math.max(pg.width + 2 * pg.bleed, pg.height + 2 * pg.bleed);
+  const safeSheet = (p) => { try { return sheet(p, s, false); } catch { return h('div.sheet', { style: { width: '60px', height: '42px' } }); } };
   stripEl.replaceChildren(...S.pages.map((p, i) => h(`button.pthumb${i === S.sel ? '.on' : ''}`, { type: 'button', 'aria-label': `Page ${i + 1}`, onclick: () => { S.sel = i; S.slot = null; S.swapFrom = null; renderBook(); } },
-    sheet(p, s, false), h('span.small', {}, `${i + 1}`))));
+    safeSheet(p), h('span.small', {}, String(i + 1)))));
   stripEl.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
@@ -770,7 +809,8 @@ function renderBook() {
   const pg = page();
   const f = S.format;
   const set = (key, v) => { f[key] = v; renderBook(); };
-  const fmt = h('section.card', {},
+  const fmt = h('details.card', {},
+    h('summary', {}, h('strong', {}, `Format : ${FORMATS[f.size][2]}${FORMATS[f.size][0] === FORMATS[f.size][1] ? '' : f.orientation === 'portrait' ? ' portrait' : ' paysage'}`), h('span.muted.small', {}, ' · modifier')),
     h('div.row', {},
       h('select', { 'aria-label': 'Format', onchange: (e) => set('size', e.target.value) }, Object.entries(FORMATS).map(([id, v]) => h('option', { value: id, selected: id === f.size }, `${v[2]} (${v[0]}×${v[1]} mm)`))),
       h('select', { 'aria-label': 'Orientation', disabled: FORMATS[f.size][0] === FORMATS[f.size][1], onchange: (e) => set('orientation', e.target.value) },
@@ -786,7 +826,7 @@ function renderBook() {
   stage.append(sheet(pgData, s, true));
 
   const panel = h('section.card');
-  panel.append(h('div.row', {}, h('h2', { style: { flex: 1 } }, `Page ${S.sel + 1} · ${LABELS[pgData.type]}`)));
+  panel.append(h('div.row', {}, h('h2', { style: { flex: 1 } }, `Page ${S.sel + 1} sur ${S.pages.length} · ${LABELS[pgData.type]}`)));
   if (pgData.type === 'photos') {
     panel.append(h('div.layouts', {}, Object.entries(LAYOUTS).map(([id, l]) => {
       const b = h(`button.lay${pgData.layout === id ? '.on' : ''}`, { type: 'button', title: l.label, 'aria-label': l.label, style: { aspectRatio: `${pg.width} / ${pg.height}` }, onclick: () => {
@@ -826,7 +866,7 @@ function renderBook() {
     const list = S.photos.filter((x) => S.showUsed || !usedIds.has(x.id));
     panel.append(h('h3', {}, p ? 'Remplacer par' : 'Choisir une photo'),
       h('label.check', {}, h('input', { type: 'checkbox', checked: S.showUsed, onchange: (e) => { S.showUsed = e.target.checked; renderBook(); } }), 'Montrer aussi les photos déjà placées'),
-      list.length ? h('div.tray', {}, list.map((x) => h(`img${usedIds.has(x.id) ? '.used' : ''}`, { src: x.url, alt: x.name, onclick: () => {
+      list.length ? h('div.tray', {}, list.map((x) => h(`img${usedIds.has(x.id) ? '.used' : ''}`, { src: x.thumbUrl, loading: 'lazy', alt: x.name, onclick: () => {
         pgData.slots = l.slots.map((_, i) => pgData.slots?.[i] ?? null); pgData.slots[S.slot] = x.id; renderBook();
       } }))) : h('p.small.muted', {}, 'Toutes les photos sont placées.'));
   } else if (pgData.type === 'photos' || pgData.type === 'cover') {
@@ -838,7 +878,12 @@ function renderBook() {
     h('button', { type: 'button', onclick: () => { S.pages.splice(S.sel + 1, 0, { id: newId(), type: 'photos', layout: 'single', slots: [null] }); S.sel++; S.slot = 0; renderBook(); } }, '+ Page'),
     h('button.danger', { type: 'button', disabled: S.pages.length < 2, onclick: () => { S.pages.splice(S.sel, 1); S.sel = Math.max(0, S.sel - 1); S.slot = null; renderBook(); } }, 'Supprimer')));
 
-  view.replaceChildren(fmt, stripEl, stage, panel);
+  const go = (d) => { S.sel += d; S.slot = null; S.swapFrom = null; renderBook(); };
+  const pager = h('div.pager', {},
+    h('button', { type: 'button', disabled: S.sel === 0, onclick: () => go(-1) }, '‹ Précédente'),
+    h('strong', {}, `Page ${S.sel + 1} / ${S.pages.length}`),
+    h('button', { type: 'button', disabled: S.sel === S.pages.length - 1, onclick: () => go(1) }, 'Suivante ›'));
+  view.replaceChildren(fmt, h('section.card', {}, h('h3', {}, `${S.pages.length} pages · touchez une page pour l’ouvrir`), stripEl), pager, stage, panel);
   renderStrip();
 }
 
@@ -855,7 +900,6 @@ async function exportPdf(btn) {
     const W = pg.width + 2 * pg.bleed, H = pg.height + 2 * pg.bleed;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: 'mm', format: [W, H], orientation: W > H ? 'l' : 'p', compress: true });
-    const imgCache = new Map();
     const canvas = document.createElement('canvas');
     const scaleTxt = Math.min(pg.width, pg.height) / 210;
     const text = (r, title, sub, pt) => {
@@ -875,12 +919,14 @@ async function exportPdf(btn) {
           const r = slotRect(pg, sl, !!l.bleed);
           const reg = region(p, r.w / r.h);
           const outW = Math.max(1, Math.round(Math.min(reg.w, r.w / 25.4 * 300))), outH = Math.max(1, Math.round(outW * r.h / r.w));
-          if (!imgCache.has(p.id)) imgCache.set(p.id, await loadImage(p.url));
+          const img = await loadImage(p.url);
           canvas.width = outW; canvas.height = outH;
           const ctx = canvas.getContext('2d');
-          ctx.drawImage(imgCache.get(p.id), reg.x, reg.y, reg.w, reg.h, 0, 0, outW, outH);
+          ctx.drawImage(img, reg.x, reg.y, reg.w, reg.h, 0, 0, outW, outH);
+          img.src = '';
           adjustPixels(ctx, outW, outH, p);
           doc.addImage(canvas.toDataURL('image/jpeg', .9), 'JPEG', r.x, r.y, r.w, r.h, undefined, 'FAST');
+          canvas.width = canvas.height = 1;
         }
         if (pd.type === 'cover' && pd.title) {
           const w = pg.width * .7, size = 30 * scaleTxt;
@@ -897,6 +943,7 @@ async function exportPdf(btn) {
         const pxW = rr.map.w / 25.4 * 240, pxH = rr.map.h / 25.4 * 240;
         drawMap(c, pxW, pxH, pd.type === 'overview' ? tripMapData() : chapterMapData(pd.clusterId), 2);
         doc.addImage(c.toDataURL('image/jpeg', .92), 'JPEG', rr.map.x, rr.map.y, rr.map.w, rr.map.h, undefined, 'FAST');
+        c.width = c.height = 1;
         text(rr.text, pd.title, pd.subtitle, (pd.type === 'overview' ? 20 : 24) * scaleTxt);
       }
     }
